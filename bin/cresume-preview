@@ -1,0 +1,22 @@
+#!/usr/bin/env zsh
+# fzf preview for cresume: $1=title $2=cwd $3=transcript path
+zmodload -F zsh/stat b:zstat
+O=$'\e[38;5;208m' P=$'\e[38;5;141m' D=$'\e[38;5;244m' B=$'\e[1m' R=$'\e[0m'
+f=$3
+[[ -r $f ]] || { echo "transcript missing: $f"; exit 0; }
+zstat -H st -F '%b %d %H:%M' -- "$f"
+size=$(( st[size] / 1048576 ))M; (( st[size] < 1048576 )) && size=$(( st[size] / 1024 ))K
+print -r -- "$B$O$1$R"
+print -r -- "$P${2/#$HOME/~}$R  $D·  ${st[mtime]}  ·  $size$R"
+e= w=${FZF_PREVIEW_COLUMNS:-60}
+print -r -- "$D${(l:w::─:)e}$R"
+# Last 8 typed prompts; grep first so multi-MB transcripts stay fast.
+command grep '"type":"user"' "$f" | command grep -v '"tool_result"' | tail -40 | jq -r '
+  select(.type=="user" and (.isMeta|not))
+  | .message.content
+  | if type=="string" then . else ([.[]? | select(.type=="text") | .text] | join(" ")) end
+  | select(length > 0 and (startswith("<") | not))
+  | gsub("\\s+"; " ") | .[0:400]
+' 2>/dev/null | tail -8 | while IFS= read -r line; do
+  print -r -- "$O›$R $line"; echo
+done
