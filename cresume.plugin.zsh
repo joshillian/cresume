@@ -14,14 +14,25 @@ zmodload -F zsh/datetime b:strftime p:EPOCHSECONDS
 # Named sessions (set via `claude -n <name>` or /rename), newest first.
 # Output: title<TAB>mtime_epoch<TAB>cwd<TAB>session_id<TAB>transcript_path
 _cresume_sessions() {
-  local f title cwd
-  local -a m
-  for f in ${(f)"$(command grep -l '"type":"custom-title"' $HOME/.claude/projects/*/*.jsonl(N.om) 2>/dev/null)"}; do
-    title=$(command grep '"type":"custom-title"' "$f" | tail -1 | jq -r .customTitle)
-    cwd=$(command grep -m1 -o '"cwd":"[^"]*"' "$f" | cut -d'"' -f4)
-    [[ -n $title && -n $cwd ]] || continue
+  local f k v line
+  local -a files m grep=(command grep)
+  local -A title cwd
+  (( $+commands[rg] )) && grep=(command rg --no-heading)  # far faster than BSD grep on GBs of transcripts
+  files=($HOME/.claude/projects/*/*.jsonl(N.om))
+  (( $#files )) || return 0
+  # One pass over all transcripts; a later rename in the same file overwrites the earlier title.
+  $grep -H -F '"type":"custom-title"' $files 2>/dev/null \
+    | jq -Rr 'capture("^(?<p>.*?\\.jsonl):(?<j>\\{.*)$") | [.p, (.j | fromjson | .customTitle)] | @tsv' 2>/dev/null \
+    | while IFS=$'\t' read -r k v; do title[$k]=$v; done
+  (( $#title )) || return 0
+  for line in ${(f)"$($grep -H -m1 -o '"cwd":"[^"]*"' ${(k)title} 2>/dev/null)"}; do
+    k=${line%%:\"cwd\":*} v=${line#*:\"cwd\":\"}
+    cwd[$k]=${v%\"}
+  done
+  for f in $files; do
+    [[ -n ${title[$f]} && -n ${cwd[$f]} ]] || continue
     zstat -A m +mtime -- "$f"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$title" "${m[1]}" "$cwd" "${f:t:r}" "$f"
+    printf '%s\t%s\t%s\t%s\t%s\n' "${title[$f]}" "${m[1]}" "${cwd[$f]}" "${f:t:r}" "$f"
   done
 }
 

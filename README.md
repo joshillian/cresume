@@ -20,9 +20,10 @@ Named sessions are the ones you started with `claude -n <name>` or renamed with 
 - zsh
 - [fzf](https://github.com/junegunn/fzf) 0.40+
 - [jq](https://jqlang.github.io/jq/)
+- [ripgrep](https://github.com/BurntSushi/ripgrep) (optional, strongly recommended: startup drops from seconds to well under one with large transcript histories)
 
 ```sh
-brew install fzf jq
+brew install fzf jq ripgrep
 ```
 
 ## Install
@@ -53,4 +54,4 @@ The list shows each session once (newest wins when names repeat), with its age (
 
 ## How it works
 
-Claude Code stores transcripts at `~/.claude/projects/<project>/<session-id>.jsonl`. A session's name is the last `custom-title` record in its transcript, and its working directory is the first `cwd` field. `cresume` reads those with `grep` and `jq`; nothing is written.
+Claude Code stores transcripts at `~/.claude/projects/<project>/<session-id>.jsonl`. A session's name is the last `custom-title` record in its transcript, and its working directory is the first `cwd` field. `cresume` reads those with `rg` (or `grep`) and `jq`; nothing is written.
