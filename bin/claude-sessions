@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Snapshot running Claude Code sessions and reopen them later in iTerm.
+
+  claude-sessions save            # snapshot live sessions (run before quitting iTerm)
+  claude-sessions list            # show what the latest snapshot contains
+  claude-sessions restore         # reopen every saved session as an iTerm tab
+  claude-sessions restore -n      # dry run: print the commands only
+
+Source of truth: ~/.claude/sessions/<pid>.json, which Claude Code keeps
+current (sessionId follows /clear, cwd, name). Only PIDs that are still
+running a claude process are captured. Restore requires macOS + iTerm2.
+Sessions relaunch with their original flags; if none were captured,
+$CRESUME_CMD (default: claude) is used, same as cresume.
+"""
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+REGISTRY = HOME / ".claude" / "sessions"
+PROJECTS = HOME / ".claude" / "projects"
+SNAP_DIR = HOME / ".claude" / "session-snapshots"
+LATEST = SNAP_DIR / "latest.json"
+
+# Flags dropped from the original argv because restore supplies its own resume target.
+RESUME_FLAGS_WITH_ARG = {"-r", "--resume", "--session-id"}
+RESUME_FLAGS_BARE = {"-c", "--continue"}
+
+
+def proc_args(pid: int) -> list[str] | None:
+    out = subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True)
+    args = out.stdout.strip()
+    if out.returncode != 0 or not args:
+        return None
+    argv = shlex.split(args)
+    if not argv or Path(argv[0]).name != "claude":
+        return None  # PID reused by something else
+    return argv
+
+
+def clean_flags(argv: list[str]) -> list[str]:
+    flags, skip = [], False
+    for a in argv[1:]:
+        if skip:
+            skip = False
+            continue
+        if a in RESUME_FLAGS_WITH_ARG:
+            skip = True
+            continue
+        if a in RESUME_FLAGS_BARE or a.startswith(("--resume=", "--session-id=")):
+            continue
+        flags.append(a)
+    return flags
+
+
+def transcript_exists(cwd: str, sid: str) -> bool:
+    enc = cwd.replace("/", "-").replace(".", "-")
+    return (PROJECTS / enc / f"{sid}.jsonl").exists() or any(PROJECTS.glob(f"*/{sid}.jsonl"))
+
+
+def save(_args) -> int:
+    sessions = []
+    for f in sorted(REGISTRY.glob("*.json")):
+        try:
+            meta = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        pid, sid, cwd = meta.get("pid"), meta.get("sessionId"), meta.get("cwd")
+        if not (pid and sid and cwd) or meta.get("kind", "interactive") != "interactive":
+            continue
+        argv = proc_args(pid)
+        if argv is None:
+            continue
+        has_transcript = transcript_exists(cwd, sid)
+        sessions.append({
+            "pid": pid,
+            "sessionId": sid,
+            "cwd": cwd,
+            "name": meta.get("name") or "",
+            "flags": clean_flags(argv),
+            "startedAt": meta.get("startedAt", 0),
+            "hasTranscript": has_transcript,
+        })
+    sessions.sort(key=lambda s: s["startedAt"])
+    SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"savedAt": int(time.time()), "sessions": sessions}, indent=2)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    (SNAP_DIR / f"{stamp}.json").write_text(payload)
+    LATEST.write_text(payload)
+    print(f"Saved {len(sessions)} session(s) -> {LATEST}")
+    _print(sessions)
+    return 0
+
+
+def _load(path: Path) -> list[dict]:
+    if not path.exists():
+        sys.exit(f"No snapshot at {path}. Run `claude-sessions save` first.")
+    data = json.loads(path.read_text())
+    age_h = (time.time() - data.get("savedAt", 0)) / 3600
+    print(f"Snapshot {path} ({age_h:.1f}h old)")
+    return data["sessions"]
+
+
+def _print(sessions: list[dict]) -> None:
+    for s in sessions:
+        note = "" if s["hasTranscript"] else "  [empty, opens fresh]"
+        print(f"  {s['sessionId'][:8]}  {s['cwd']:<45} {s['name']}{note}")
+
+
+def list_(args) -> int:
+    _print(_load(Path(args.file)))
+    return 0
+
+
+def command_for(s: dict) -> str:
+    # Original flags win; CRESUME_CMD (shared with cresume) applies only when none were captured.
+    if s["flags"]:
+        parts = ["claude", *s["flags"]]
+    else:
+        parts = shlex.split(os.environ.get("CRESUME_CMD", "claude"))
+    if s["hasTranscript"]:
+        parts += ["-r", s["sessionId"]]
+    return f"cd {shlex.quote(s['cwd'])} && " + shlex.join(parts)
+
+
+# argv: name1, cmd1, name2, cmd2, ...  -> one iTerm window, one tab per session.
+APPLESCRIPT = r'''
+on run argv
+  tell application "iTerm"
+    activate
+    set w to (create window with default profile)
+    set i to 1
+    repeat while i < (count of argv)
+      set tabName to item i of argv
+      set cmd to item (i + 1) of argv
+      if i > 1 then
+        tell w to create tab with default profile
+      end if
+      tell current session of w
+        set name to tabName
+        write text cmd
+      end tell
+      set i to i + 2
+      delay 0.5
+    end repeat
+  end tell
+end run
+'''
+
+
+def restore(args) -> int:
+    sessions = _load(Path(args.file))
+    if not sessions:
+        print("Nothing to restore.")
+        return 0
+    live = {s["sessionId"] for s in _current_live()}
+    todo = [s for s in sessions if s["sessionId"] not in live]
+    skipped = len(sessions) - len(todo)
+    if skipped:
+        print(f"Skipping {skipped} session(s) already running.")
+    argv = []
+    for s in todo:
+        cmd = command_for(s)
+        print(f"  {s['name'] or s['sessionId'][:8]}: {cmd}")
+        argv += [s["name"] or s["sessionId"][:8], cmd]
+    if args.dry_run or not todo:
+        return 0
+    r = subprocess.run(["osascript", "-", *argv], input=APPLESCRIPT, text=True)
+    return r.returncode
+
+
+def _current_live() -> list[dict]:
+    out = []
+    for f in REGISTRY.glob("*.json"):
+        try:
+            meta = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("pid") and proc_args(meta["pid"]) is not None:
+            out.append(meta)
+    return out
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("save").set_defaults(fn=save)
+    for name, fn in (("list", list_), ("restore", restore)):
+        sp = sub.add_parser(name)
+        sp.add_argument("-f", "--file", default=str(LATEST), help="snapshot file (default: latest)")
+        if name == "restore":
+            sp.add_argument("-n", "--dry-run", action="store_true")
+        sp.set_defaults(fn=fn)
+    args = p.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

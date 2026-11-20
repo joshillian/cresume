@@ -41,11 +41,26 @@ In the picker: type to filter, `enter` to open, `ctrl-/` to toggle the preview, 
 
 The list shows each session once (newest wins when names repeat), with its age (green within 24h) and working directory. The preview shows the directory, last-modified time, transcript size and the last 8 prompts you typed.
 
+## Save and restore every running session
+
+`claude-sessions` (in `bin/`, put on your `PATH` by the plugin) snapshots every Claude Code session that's running right now and reopens them all later. Handy before quitting your terminal for an OS upgrade or reboot. Restore is macOS + [iTerm2](https://iterm2.com) only; requires Python 3.10+.
+
+| Command | Does |
+| --- | --- |
+| `claude-sessions save` | Snapshot every running session (run right before you quit) |
+| `claude-sessions list` | Show what the latest snapshot holds |
+| `claude-sessions restore` | Open one iTerm window with a tab per session, each `cd`'d to its directory and running `claude -r <id>` |
+| `claude-sessions restore -n` | Dry run: print the commands only |
+
+Sessions that are already running are skipped on restore. Each session comes back with the flags it was started with; if none were captured, `CRESUME_CMD` is used. A session that never got a message has no transcript to resume, so it opens as a fresh `claude` in the same directory. A session busy when you quit resumes from its last saved message.
+
+Snapshots go to `~/.claude/session-snapshots/` (`latest.json` plus a timestamped copy per save; `restore -f <file>` picks an older one). The session list comes from `~/.claude/sessions/<pid>.json`, which Claude Code keeps current, including the new session id after `/clear`.
+
 ## Config
 
 | Variable | Default | |
 | --- | --- | --- |
-| `CRESUME_CMD` | `claude` | Command used to resume, e.g. `claude --dangerously-skip-permissions` |
+| `CRESUME_CMD` | `claude` | Command used to resume, e.g. `claude --dangerously-skip-permissions`. Also `claude-sessions restore`'s fallback when a session's original flags weren't captured |
 
 ## How it works
 

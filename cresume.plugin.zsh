@@ -3,11 +3,14 @@
 #
 #   cresume          pick from all named sessions
 #   cresume <name>   exact name (newest wins) opens directly; else picker pre-filtered to <name>
+#   claude-sessions save|restore|list   snapshot every running session, reopen them as iTerm tabs
 #
 # Config:
 #   CRESUME_CMD      command used to resume (default: claude), e.g. "claude --dangerously-skip-permissions"
 
 typeset -g _CRESUME_DIR=${0:A:h}
+# bin/ holds claude-sessions (save/restore every running session as iTerm tabs).
+(( ${path[(Ie)$_CRESUME_DIR/bin]} )) || path+=($_CRESUME_DIR/bin)
 zmodload -F zsh/stat b:zstat
 zmodload -F zsh/datetime b:strftime p:EPOCHSECONDS
 
